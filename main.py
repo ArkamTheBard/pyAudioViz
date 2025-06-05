@@ -8,7 +8,7 @@ from pydub import AudioSegment
 from pydub.playback import play
 
 
-def log_bins(spectrum, bars, sample_rate, chunk_size):
+def log_bins(spectrum, bars, sample_rate, chunk_size, bin_floor=10.0):
     freqs = numpy.fft.rfftfreq(chunk_size, 1 / sample_rate)
     min_freq, max_freq = freqs[1], freqs[-1]
     log_edges = numpy.logspace(math.log10(min_freq), math.log10(max_freq), bars + 1)
@@ -16,9 +16,9 @@ def log_bins(spectrum, bars, sample_rate, chunk_size):
     for i in range(bars):
         idx = numpy.where((freqs >= log_edges[i]) & (freqs < log_edges[i+1]))[0]
         if len(idx) > 0:
-            bar_vals.append(numpy.mean(spectrum[idx]))
+            bar_vals.append(max(numpy.mean(spectrum[idx]), bin_floor))
         else:
-            bar_vals.append(0)
+            bar_vals.append(bin_floor)
     return bar_vals
 
 
@@ -28,7 +28,7 @@ def draw_slider(screen, value, SLIDER_X, SLIDER_Y, SLIDER_WIDTH, SLIDER_HEIGHT):
     pygame.draw.rect(screen, (0, 200, 0), (handle_x, SLIDER_Y - 5, 10, SLIDER_HEIGHT + 10))
 
 def main():
-    CHUNK = 1024
+    CHUNK = 2048
     BARS = 64
     WIDTH, HEIGHT = 800, 600
     BAR_WIDTH = WIDTH // BARS
@@ -36,7 +36,13 @@ def main():
     SLIDER_WIDTH = 300
     SLIDER_HEIGHT = 20
     SLIDER_X = (WIDTH - SLIDER_WIDTH) // 2
-    SLIDER_Y = HEIGHT - 50
+    SLIDER_Y = HEIGHT - 30
+
+    BIN_FLOOR = 10.0
+    min_norm = 100.0
+    FLOOR = HEIGHT - 40
+    GAIN = 2.0
+
 
     audio = AudioSegment.from_mp3("lightson.mp3").set_channels(1)
     samples = numpy.array(audio.get_array_of_samples())
@@ -57,9 +63,10 @@ def main():
     pygame.mixer.music.play()
 
     prev_heights = [0] * BARS
-    smoothing = 0.75
+    smoothing = 0.80
 
-    volume = 1.0
+    volume = .25
+    pygame.mixer.music.set_volume(volume)
     dragging = False
 
     running = True
@@ -91,17 +98,20 @@ def main():
         window = numpy.hanning(CHUNK)
         chunk = chunk * window
 
-        spectrum = numpy.abs(numpy.fft.rfft(chunk))
-        bars = log_bins(spectrum, BARS, sample_rate, CHUNK)
-        max_val = numpy.max(spectrum) or 1
-        heights = [int((h / max_val) * HEIGHT) for h in bars]
+        spectrum = numpy.abs(numpy.fft.rfft(chunk)) * GAIN
+        spectrum = numpy.power(spectrum, 0.7)
+        bars = log_bins(spectrum, BARS, sample_rate, CHUNK, BIN_FLOOR)
+        max_val = max(numpy.max(bars), min_norm)
+        heights = [max(8, int((h / max_val) * (HEIGHT-40) * volume)) if volume > 0 else 0 for h in bars]
 
         heights = [int(smoothing * prev + (1 - smoothing) * curr) for prev, curr in zip(prev_heights, heights)]
         prev_heights = heights
 
         screen.fill((0, 0, 0))
+        pygame.draw.line(screen, (200, 200, 200), (0, FLOOR), (WIDTH, FLOOR), 2)
         for j,h in enumerate(heights):
-            pygame.draw.rect(screen, (0, 255, 0), (j*BAR_WIDTH, HEIGHT-h, BAR_WIDTH-2, h))
+            bar_top = max(FLOOR - h, 0)
+            pygame.draw.rect(screen, (0, 255, 0), (j*BAR_WIDTH, bar_top, BAR_WIDTH-2, h))
 
         draw_slider(screen, volume, SLIDER_X, SLIDER_Y, SLIDER_WIDTH, SLIDER_HEIGHT)
         pygame.display.flip()
