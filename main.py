@@ -1,8 +1,10 @@
 import math
+import os
 import numpy
 import pygame
 import re
 import sounddevice as sd
+import sys
 
 
 def log_bins(spectrum, bars, sample_rate, chunk_size, bin_floor):
@@ -17,6 +19,12 @@ def log_bins(spectrum, bars, sample_rate, chunk_size, bin_floor):
         else:
             bar_vals.append(bin_floor)
     return bar_vals
+
+def resource_path(relative_path):
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
+
 
 def main():
     CHUNK = 2048
@@ -45,7 +53,7 @@ def main():
     sample_rate = int(devices[stereo_mix_index]['default_samplerate'])
 
     pygame.init()
-    icon_surface = pygame.image.load("avatar_65ee593544d6_512.png")
+    icon_surface = pygame.image.load(resource_path("avatar_65ee593544d6_512.png"))
     pygame.mixer.init(frequency=sample_rate)
     pygame.display.set_caption("Arkam's Audio Visualizer")
     pygame.display.set_icon(icon_surface)
