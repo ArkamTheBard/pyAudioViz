@@ -1,10 +1,70 @@
 import math
 import os
 import numpy
+import platform
 import pygame
 import re
 import sounddevice as sd
 import sys
+
+
+def get_enabled_input_devices():
+    devices = sd.query_devices()
+    enabled = []
+    for idx, dev in enumerate(devices):
+        if dev['max_input_channels'] > 0:
+            try:
+                with sd.InputStream(device=idx, channels=1, samplerate=int(dev['default_samplerate']), blocksize=32):
+                    enabled.append((idx, dev['name']))
+            except Exception:
+                continue
+    return enabled
+
+
+def find_loopback_device(devices):
+    system = platform.system().lower()
+    patterns = []
+    if system == 'windows':
+        patterns = [r"stereo ?mix", r"cable output"]
+    elif system == 'linux':
+        patterns = [r"monitor", r"loopback"]
+    elif system == 'darwin':
+        patterns = [r"blackhole", r"loopback", r"soundflower"]
+
+    for idx, name in devices:
+        for pat in patterns:
+            if re.search(pat, name, re.IGNORECASE):
+                return idx
+    return None
+
+
+def select_device_pygame(devices, screen, font):
+    selected = 0
+    running = True
+    clock = pygame.time.Clock()
+
+    while running:
+        screen.fill((30,30,30))
+        title = font.render("Select Audio Input Device (Up/Down, Enter):", True, (255, 255, 255))
+        screen.blit(title, (20, 20))
+        for i, (idx, name) in enumerate(devices):
+            color = (0, 255, 0) if i == selected else (200, 200, 200)
+            text = font.render(f"{idx}: {name}", True, color)
+            screen.blit(text, (40, 60 + i * 30))
+        pygame.display.flip()
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_DOWN:
+                    selected = (selected + 1) % len(devices)
+                elif event.key == pygame.K_UP:
+                    selected = (selected - 1) % len(devices)
+                elif event.key == pygame.K_RETURN:
+                    return devices[selected][0]
+        clock.tick(30)
 
 
 def log_bins(spectrum, bars, sample_rate, chunk_size, bin_floor):
@@ -41,23 +101,22 @@ def main():
     volume = 0.25
     buffer = numpy.zeros(ANALYSIS_SIZE, dtype='float32')
 
-    devices = sd.query_devices()
-    cable_index = None
-    for idx, dev in enumerate(devices):
-        if dev['max_input_channels'] > 0 and re.search(r'cable output', dev['name'], re.IGNORECASE):
-            cable_index = idx
-            break
-    if cable_index is None:
-        raise RuntimeError("No VB-Cable device found.")
+    devices = get_enabled_input_devices()
 
-    sample_rate = int(devices[cable_index]['default_samplerate'])
 
     pygame.init()
     icon_surface = pygame.image.load(resource_path("avatar_65ee593544d6_512.png"))
-    pygame.mixer.init(frequency=sample_rate)
     pygame.display.set_caption("Arkam's Audio Visualizer")
     pygame.display.set_icon(icon_surface)
     screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
+    font = pygame.font.SysFont(None, 28)
+
+    device_index = find_loopback_device(devices)
+    if device_index is None:
+        device_index = select_device_pygame(devices, screen, font)
+    sample_rate = int(sd.query_devices()[device_index]['default_samplerate'])
+
+    pygame.mixer.init(frequency=sample_rate)
 
     prev_heights = [0] * BARS
     running = True
@@ -97,7 +156,7 @@ def main():
 
     with sd.InputStream(
         samplerate=sample_rate,
-        device=cable_index,
+        device=device_index,
         channels=2,
         dtype='float32',
         blocksize=CHUNK,
