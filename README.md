@@ -11,9 +11,18 @@ The workaround I had to use was to set my motherboard's audio card to the defaul
 act as a Windows WASAPI host. Then from there set Audacity to play the audio back live to my preferred device as it
 records the sound from Stereo Mix.
 
+The above workaround is still viable as well as Stereo Mix, but I added compatibility with VB-Audio Virtual Cable since
+it is a more seamless and easier solution for loopback audio on Windows.
+
 # Requirements
+**WINDOWS**
+---
 Windows 10 or later
 
 Python 3.10 or later
 
 Audacity (for loopback audio) and/or Stereo Mix device enabled
+
+**OR**
+
+VB-Audio Virtual Cable for loopback audio
