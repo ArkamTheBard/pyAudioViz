@@ -151,7 +151,6 @@ def main():
     window_size = [WIDTH, HEIGHT]
 
     if platform.system().lower() == 'linux':
-        # TODO: Implement PipeWire support for Linux
         sample_rate = 44100
         channels = 2
         CHUNK = 512
