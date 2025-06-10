@@ -7,6 +7,7 @@ import re
 import sounddevice as sd
 import subprocess
 import sys
+import time
 
 
 def get_enabled_input_devices():
@@ -39,19 +40,24 @@ def find_loopback_device(devices):
 def get_pipewire_stream(sample_rate, channels, source_name="default"):
     ffmpeg_cmd = [
         "ffmpeg",
-        "-f", "pipewire",
+        "-fflags", "nobuffer",
+        "-flags", "low_delay",
+        "-probesize", "32",
+        "-analyzeduration", "0",
+        "-f", "pulse",
         "-i", source_name,
         "-f", "f32le",
         "-acodec", "pcm_f32le",
         "-ar", str(sample_rate),
         "-ac", str(channels),
+        "-bufsize", "32k",
         "-"
     ]
     return subprocess.Popen(
         ffmpeg_cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
-        buffsize=0
+        bufsize=0
     )
 
 def select_device_pygame(devices, screen, font):
