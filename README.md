@@ -17,12 +17,29 @@ it is a more seamless and easier solution for loopback audio on Windows.
 # Requirements
 **WINDOWS**
 ---
-Windows 10 or later
+Windows 10 or later, or Windows that supports WASAPI and Python 3.10 or later
 
 Python 3.10 or later
 
-Audacity (for loopback audio) and/or Stereo Mix device enabled
+Audacity (for loopback audio) and/or Stereo Mix device enabled (this may use disk space, since Audacity will write the
+audio buffer to the disk. This does not apply to only using Stereo Mix. Stereo Mix does not use disk space.)
 
 **OR**
 
-VB-Audio Virtual Cable for loopback audio
+VB-Audio Virtual Cable for loopback audio (recommended, way less of a headache)
+
+Due to the nature of Windows audio, ArkPyViz can only capture all system audio, not just a specific application.
+
+**LINUX**
+---
+Unsure if this works across all distros, but it's just Python and pygame so it should work on most
+distros.
+
+Tested on Arch 6.14.10
+
+Requires PipeWire for audio and PipeWire-Jack for JACK support
+
+Python 3.10 or later
+
+By default, ArkPyViz will look for an audio device that contains the string "playback" or "loopback" in the name.
+If it does not find either of these, it will default to grabbing Spotify's audio device.
