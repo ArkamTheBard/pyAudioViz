@@ -4,6 +4,7 @@ import numpy
 import platform
 import pygame
 import re
+import threading
 import sounddevice as sd
 import sys
 
@@ -26,8 +27,6 @@ def find_loopback_device(devices):
     patterns = []
     if system == 'windows':
         patterns = [r"stereo ?mix", r"cable output"]
-    elif system == 'linux':
-        patterns = [r"monitor", r"loopback"]
     elif system == 'darwin':
         patterns = [r"blackhole", r"loopback", r"soundflower"]
 
@@ -86,8 +85,47 @@ def resource_path(relative_path):
         return os.path.join(sys._MEIPASS, relative_path)
     return os.path.join(os.path.abspath("."), relative_path)
 
+def make_audio_callback(screen, window_size, BARS, FLOOR_OFFSET, GAIN, min_norm, BIN_FLOOR, smoothing, buffer, prev_heights, volume, log_bins, sample_rate, CHUNK):
+    def audio_callback(indata, frames, time, status):
+        nonlocal prev_heights, buffer, volume
+        WIDTH, HEIGHT = window_size
+        BAR_WIDTH = WIDTH // BARS
+        FLOOR = HEIGHT - FLOOR_OFFSET
+
+        buffer = numpy.roll(buffer, -CHUNK)
+        if platform.system().lower() == 'linux':
+            samples = indata[:, 0]
+            if len(samples) < CHUNK:
+                padded = numpy.zeros(CHUNK, dtype=samples.dtype)
+                padded[-len(samples):] = samples
+                buffer[-CHUNK:] = padded
+            else:
+                buffer[-CHUNK:] = samples[-CHUNK:]
+        else:
+            buffer[-CHUNK:] = indata[:, 0]
+
+        valid_len = min(numpy.count_nonzero(buffer), len(buffer))
+        if valid_len >= CHUNK:
+            window = numpy.hanning(valid_len)
+            windowed = buffer[-valid_len:] * window
+            spectrum = numpy.abs(numpy.fft.rfft(windowed)) * GAIN
+            spectrum = numpy.power(spectrum, 0.7)
+            bars = log_bins(spectrum, BARS, sample_rate, valid_len, BIN_FLOOR)
+            max_val = max(numpy.max(bars), min_norm)
+            heights = [max(7, int((h / max_val) * (HEIGHT-FLOOR_OFFSET))) if volume > 0 else 0 for h in bars]
+            heights = [int(smoothing * prev + (1 - smoothing) * curr) for prev, curr in zip(prev_heights, heights)]
+            prev_heights[:] = heights
+
+            screen.fill((0,0,0))
+            pygame.draw.line(screen, (200, 200, 200), (0, FLOOR), (WIDTH, FLOOR), 2)
+            for j, h in enumerate(heights):
+                bar_top = max(FLOOR - h, 0)
+                pygame.draw.rect(screen, (0, 255, 0), (j*BAR_WIDTH, bar_top, BAR_WIDTH-2, h))
+            pygame.display.flip()
+    return audio_callback
 
 def main():
+
     CHUNK = 512
     ANALYSIS_SIZE = 10240
     BARS = 64
@@ -100,6 +138,95 @@ def main():
     smoothing = 0.80
     volume = 0.25
     buffer = numpy.zeros(ANALYSIS_SIZE, dtype='float32')
+    prev_heights = [0] * BARS
+    running = True
+    window_size = [WIDTH, HEIGHT]
+
+    if platform.system().lower() == 'linux':
+        import jack
+        sample_rate = 48000
+        channels = 2
+        CHUNK = 512
+        ANALYSIS_SIZE = 10240
+        BARS = 64
+        WIDTH, HEIGHT = 800, 600
+        BIN_FLOOR = 0.1
+        min_norm = 10.0
+        FLOOR_OFFSET = 40
+        GAIN = 2.0
+        smoothing = 0.80
+        volume = 0.25
+        buffer = numpy.zeros(ANALYSIS_SIZE, dtype='float32')
+        prev_heights = [0] * BARS
+        running = True
+        window_size = [WIDTH, HEIGHT]
+
+        pygame.init()
+        icon_surface = pygame.image.load(resource_path("avatar_65ee593544d6_512.png"))
+        pygame.display.set_caption("Arkam's Audio Visualizer")
+        pygame.display.set_icon(icon_surface)
+        screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
+        font = pygame.font.SysFont(None, 28)
+        pygame.mixer.init(frequency=sample_rate)
+
+        audio_callback = make_audio_callback(
+            screen, window_size, BARS, FLOOR_OFFSET, GAIN, min_norm, BIN_FLOOR, smoothing, buffer, prev_heights,
+            volume, log_bins, sample_rate, CHUNK
+        )
+
+        client = jack.Client("AudioVisualizer")
+        inports = [client.inports.register(f'input_{i+1}') for i in range(channels)]
+
+        buffer_lock = threading.Lock()
+        latest_indata = numpy.zeros((CHUNK, channels), dtype='float32')
+
+        def process(frames):
+            nonlocal buffer, latest_indata
+            indata = numpy.stack([port.get_array() for port in inports], axis=-1)
+            samples = indata[:, 0]
+            buffer = numpy.roll(buffer, -CHUNK)
+            if len(samples) < CHUNK:
+                padded = numpy.zeros(CHUNK, dtype=samples.dtype)
+                padded[-len(samples):] = samples
+                buffer[-CHUNK:] = padded
+            else:
+                buffer[-CHUNK:] = samples[-CHUNK:]
+            with buffer_lock:
+                # latest_indata[:] = indata
+                if indata.shape[0] < latest_indata.shape[0]:
+                    indata_padded = numpy.zeros_like(latest_indata)
+                    indata_padded[-indata.shape[0]:] = indata
+                    latest_indata = indata_padded
+                else:
+                    latest_indata[:] = indata[-latest_indata.shape[0]:]
+
+        client.set_process_callback(process)
+        client.activate()
+
+        all_ports = client.get_ports(is_output=True)
+        system_audio_ports = [p for p in all_ports if "playback" in p.name.lower() or "loopback" in p.name.lower() or "spotify" in p.name.lower()]
+        if len(system_audio_ports) >= len(inports):
+            for i, inport in enumerate(inports):
+                client.connect(system_audio_ports[i], inport)
+
+        try:
+            while running:
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        running = False
+                    elif event.type == pygame.VIDEORESIZE:
+                        window_size[0], window_size[1] = event.w, event.h
+                        screen = pygame.display.set_mode((event.w, event.h), pygame.RESIZABLE)
+                with buffer_lock:
+                    indata_copy = latest_indata.copy()
+                audio_callback(indata_copy, CHUNK, None, None)
+                pygame.time.wait(10)
+        finally:
+            client.deactivate()
+            client.close()
+            pygame.quit()
+
+        return
 
     devices = get_enabled_input_devices()
 
@@ -118,41 +245,10 @@ def main():
 
     pygame.mixer.init(frequency=sample_rate)
 
-    prev_heights = [0] * BARS
-    running = True
-
-    window_size = [WIDTH, HEIGHT]
-
-    def audio_callback(indata, frames, time, status):
-        nonlocal prev_heights, running, volume, buffer
-        WIDTH, HEIGHT = window_size
-        BAR_WIDTH = WIDTH // BARS
-        FLOOR = HEIGHT - FLOOR_OFFSET
-
-        if not running:
-            raise sd.CallbackStop
-
-        buffer = numpy.roll(buffer, -CHUNK)
-        buffer[-CHUNK:] = indata[:, 0]
-
-        valid_len = min(numpy.count_nonzero(buffer), ANALYSIS_SIZE)
-        if valid_len >= CHUNK:
-            window = numpy.hanning(valid_len)
-            windowed = buffer[-valid_len:] * window
-            spectrum = numpy.abs(numpy.fft.rfft(windowed)) * GAIN
-            spectrum = numpy.power(spectrum, 0.7)
-            bars = log_bins(spectrum, BARS, sample_rate, valid_len, BIN_FLOOR)
-            max_val = max(numpy.max(bars), min_norm)
-            heights = [max(7, int((h / max_val) * (HEIGHT-FLOOR_OFFSET))) if volume > 0 else 0 for h in bars]
-            heights = [int(smoothing * prev + (1 - smoothing) * curr) for prev, curr in zip(prev_heights, heights)]
-            prev_heights = heights
-
-            screen.fill((0,0,0))
-            pygame.draw.line(screen, (200, 200, 200), (0, FLOOR), (WIDTH, FLOOR), 2)
-            for j, h in enumerate(heights):
-                bar_top = max(FLOOR - h, 0)
-                pygame.draw.rect(screen, (0, 255, 0), (j*BAR_WIDTH, bar_top, BAR_WIDTH-2, h))
-            pygame.display.flip()
+    audio_callback = make_audio_callback(
+        screen, window_size, BARS, FLOOR_OFFSET, GAIN, min_norm, BIN_FLOOR, smoothing, buffer, prev_heights,
+        volume, log_bins, sample_rate, CHUNK
+    )
 
     with sd.InputStream(
         samplerate=sample_rate,
