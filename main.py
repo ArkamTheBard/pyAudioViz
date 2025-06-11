@@ -4,10 +4,9 @@ import numpy
 import platform
 import pygame
 import re
+import threading
 import sounddevice as sd
-import subprocess
 import sys
-import time
 
 
 def get_enabled_input_devices():
@@ -37,28 +36,6 @@ def find_loopback_device(devices):
                 return idx
     return None
 
-def get_pipewire_stream(sample_rate, channels, source_name="default"):
-    ffmpeg_cmd = [
-        "ffmpeg",
-        "-fflags", "nobuffer",
-        "-flags", "low_delay",
-        "-probesize", "32",
-        "-analyzeduration", "0",
-        "-f", "pulse",
-        "-i", source_name,
-        "-f", "f32le",
-        "-acodec", "pcm_f32le",
-        "-ar", str(sample_rate),
-        "-ac", str(channels),
-        "-bufsize", "32k",
-        "-"
-    ]
-    return subprocess.Popen(
-        ffmpeg_cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        bufsize=0
-    )
 
 def select_device_pygame(devices, screen, font):
     selected = 0
@@ -116,7 +93,16 @@ def make_audio_callback(screen, window_size, BARS, FLOOR_OFFSET, GAIN, min_norm,
         FLOOR = HEIGHT - FLOOR_OFFSET
 
         buffer = numpy.roll(buffer, -CHUNK)
-        buffer[-CHUNK:] = indata[:, 0]
+        if platform.system().lower() == 'linux':
+            samples = indata[:, 0]
+            if len(samples) < CHUNK:
+                padded = numpy.zeros(CHUNK, dtype=samples.dtype)
+                padded[-len(samples):] = samples
+                buffer[-CHUNK:] = padded
+            else:
+                buffer[-CHUNK:] = samples[-CHUNK:]
+        else:
+            buffer[-CHUNK:] = indata[:, 0]
 
         valid_len = min(numpy.count_nonzero(buffer), len(buffer))
         if valid_len >= CHUNK:
@@ -157,7 +143,8 @@ def main():
     window_size = [WIDTH, HEIGHT]
 
     if platform.system().lower() == 'linux':
-        sample_rate = 44100
+        import jack
+        sample_rate = 48000
         channels = 2
         CHUNK = 512
         ANALYSIS_SIZE = 10240
@@ -174,9 +161,6 @@ def main():
         running = True
         window_size = [WIDTH, HEIGHT]
 
-        proc = get_pipewire_stream(sample_rate, channels)
-        bytes_per_sample = 4
-
         pygame.init()
         icon_surface = pygame.image.load(resource_path("avatar_65ee593544d6_512.png"))
         pygame.display.set_caption("Arkam's Audio Visualizer")
@@ -190,21 +174,58 @@ def main():
             volume, log_bins, sample_rate, CHUNK
         )
 
-        while running:
-            raw = proc.stdout.read(CHUNK * channels * bytes_per_sample)
-            if not raw:
-                break
-            indata = numpy.frombuffer(raw, dtype='float32').reshape(-1, channels)
-            audio_callback(indata, indata.shape[0], None, None)
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    running = False
-                elif event.type == pygame.VIDEORESIZE:
-                    window_size[0], window_size[1] = event.w, event.h
-                    screen = pygame.display.set_mode((event.w, event.h), pygame.RESIZABLE)
-            pygame.time.wait(10)
+        client = jack.Client("AudioVisualizer")
+        inports = [client.inports.register(f'input_{i+1}') for i in range(channels)]
 
-        pygame.quit()
+        buffer_lock = threading.Lock()
+        latest_indata = numpy.zeros((CHUNK, channels), dtype='float32')
+
+        def process(frames):
+            nonlocal buffer, latest_indata
+            indata = numpy.stack([port.get_array() for port in inports], axis=-1)
+            samples = indata[:, 0]
+            buffer = numpy.roll(buffer, -CHUNK)
+            if len(samples) < CHUNK:
+                padded = numpy.zeros(CHUNK, dtype=samples.dtype)
+                padded[-len(samples):] = samples
+                buffer[-CHUNK:] = padded
+            else:
+                buffer[-CHUNK:] = samples[-CHUNK:]
+            with buffer_lock:
+                # latest_indata[:] = indata
+                if indata.shape[0] < latest_indata.shape[0]:
+                    indata_padded = numpy.zeros_like(latest_indata)
+                    indata_padded[-indata.shape[0]:] = indata
+                    latest_indata = indata_padded
+                else:
+                    latest_indata[:] = indata[-latest_indata.shape[0]:]
+
+        client.set_process_callback(process)
+        client.activate()
+
+        all_ports = client.get_ports(is_output=True)
+        system_audio_ports = [p for p in all_ports if "playback" in p.name.lower() or "loopback" in p.name.lower() or "spotify" in p.name.lower()]
+        if len(system_audio_ports) >= len(inports):
+            for i, inport in enumerate(inports):
+                client.connect(system_audio_ports[i], inport)
+
+        try:
+            while running:
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        running = False
+                    elif event.type == pygame.VIDEORESIZE:
+                        window_size[0], window_size[1] = event.w, event.h
+                        screen = pygame.display.set_mode((event.w, event.h), pygame.RESIZABLE)
+                with buffer_lock:
+                    indata_copy = latest_indata.copy()
+                audio_callback(indata_copy, CHUNK, None, None)
+                pygame.time.wait(10)
+        finally:
+            client.deactivate()
+            client.close()
+            pygame.quit()
+
         return
 
     devices = get_enabled_input_devices()
