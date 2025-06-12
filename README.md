@@ -19,7 +19,7 @@ it is a more seamless and easier solution for loopback audio on Windows.
 ---
 Windows 10 or later, or Windows that supports WASAPI and Python 3.10 or later
 
-Python 3.10 or later
+Python 3.13 or later
 
 Audacity (for loopback audio) and/or Stereo Mix device enabled (this may use disk space, since Audacity will write the
 audio buffer to the disk. This does not apply to only using Stereo Mix. Stereo Mix does not use disk space.)
@@ -39,7 +39,7 @@ Tested on Arch 6.14.10
 
 Requires PipeWire for audio and PipeWire-Jack for JACK support
 
-Python 3.10 or later
+Python 3.13 or later
 
 By default, ArkPyViz will look for an audio device that contains the string "playback" or "loopback" in the name.
 If it does not find either of these, it will default to grabbing Spotify's audio device.
